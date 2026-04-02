@@ -4,7 +4,7 @@ import csv
 from datetime import datetime, timedelta
 
 
-# Hash table
+# Hash table: stores package data using the package ID as the key
 class HashTable:
     def __init__(self, size=50):
         self.table = [[] for _ in range(size)]
@@ -43,6 +43,9 @@ class Package:
         self.status = "At Hub"
         self.delivery_time = None
 
+        # Used to correct package 9's address
+        self.corrected = False
+
     def __str__(self):
         return f"{self.id} | {self.address} | {self.status} | {self.delivery_time}"
 
@@ -72,7 +75,7 @@ def load_distance_data(filename):
             distances.append(row[1:])
 
 
-# Pull data from package file csv to create package class objects and insert into hash table
+# Pull data from package file csv to insert raw data into hash table
 def load_package_data(filename, hashTable):
 
     with open(filename) as csvfile:
@@ -81,21 +84,34 @@ def load_package_data(filename, hashTable):
 
         for row in reader:
 
-            package = Package(
-                row[0],
-                row[1],
-                row[2],
-                row[3],
-                row[4],
-                row[5],
-                row[6],
-                row[7] if len(row) > 7 else ""
-            )
+            packageID = int(row[0])
 
-            hashTable.insert(package.id, package)
+            hashTable.insert(packageID, [
+                row[1],  # address
+                row[5],  # deadline
+                row[2],  # city
+                row[4],  # zip code
+                row[6],  # weight
+                "At Hub",  # status
+                None  # delivery time
+            ])
 
+# Package object creation method for use with hash table raw data
+# Allows delivery algorithm to work with object classes
+def create_package(packageID):
+    data = packageTable.lookup(packageID)
+    return Package(
+        packageID,
+        data[0],
+        data[2],
+        "",
+        data[3],
+        data[1],
+        data[4],
+        ""
+    )
 
-# Find address index
+# Find address index for reference when calculating distances
 def address_index(address):
     for i, a in enumerate(addresses):
         if a.strip() == address.strip():
@@ -103,7 +119,7 @@ def address_index(address):
     raise Exception(f"Address not found: {address}")
 
 
-# Distance between addresses
+# Calculates distance between addresses via distance table for use by nearest neighbor algorithm
 def get_distance(addr1, addr2):
 
     i = address_index(addr1)
@@ -118,14 +134,28 @@ def get_distance(addr1, addr2):
 
 
 # Nearest neighbor algorithm logic
+# Finds closest undelivered package after each delivery
 def deliver_packages(truck):
 
     undelivered = truck.packages[:]
-
+    package9 = next((p for p in truck.packages if p.id == 9), None)
     while undelivered:
 
         nearest = None
         nearestNeighbor = float("inf")
+
+        # Updates correct address for package 9 at 10:20
+        if truck.time >= timedelta(hours=10, minutes=20) and package9 and not package9.corrected:
+            # Update Package object
+            package9.address = "410 S State St"
+            package9.zip = "84111"
+
+            # Update hash table
+            data = packageTable.lookup(9)
+            data[0] = "410 S State St"
+            data[3] = "84111"
+
+            package9.corrected = True
 
         for package in undelivered:
 
@@ -143,23 +173,28 @@ def deliver_packages(truck):
 
         nearest.status = "Delivered"
         nearest.delivery_time = truck.time
+        data = packageTable.lookup(nearest.id)
+        data[5] = "Delivered"
+        data[6] = truck.time
 
         truck.location = nearest.address
 
         undelivered.remove(nearest)
 
+# Below methods are for the user to query packages at a desired time
+# Pulls data from hash table and trucks loaded package class objects
 def package_status_at_time(package, queryTime, truckStartTime):
 
     if queryTime < truckStartTime:
         return "At Hub"
 
-    if package.delivery_time is None:
+    if package[6] is None:
         return "En Route"
 
-    if queryTime < package.delivery_time:
+    if queryTime < package[6]:
         return "En Route"
 
-    return f"Delivered at {package.delivery_time}"
+    return f"Delivered at {package[6]}"
 
 def print_truck_status(truck, queryTime):
 
@@ -168,28 +203,40 @@ def print_truck_status(truck, queryTime):
 
     for package in truck.packages:
         status = package_status_at_time(package, queryTime, truck.time)
-        print(f"Package {package.id} | {package.address} | {status}")
+        print(f"Package {package.id} | {packageTable.lookup(package.id)[0]} | {status}")
 
-def print_all_status(queryTime):
+def print_all_status(queryTime, trucks):
 
     print("\n================================================")
     print("Package Status at", queryTime)
     print("================================================")
 
-    for i in range(1, 41):
+    for i, truck in enumerate(trucks, start=1):
 
-        package = packageTable.lookup(i)
+        print(f"\n--- Truck {i} ---")
 
-        if package.delivery_time and queryTime >= package.delivery_time:
-            status = f"Delivered at {package.delivery_time}"
-        elif queryTime >= timedelta(hours=8):
-            status = "En Route"
-        else:
-            status = "At Hub"
+        sorted_packages = sorted(truck.packages, key=lambda p: p.id)
 
-        print(f"Package {package.id} | {package.address} | {status}")
+        for package in sorted_packages:
 
+            if package.delivery_time and queryTime >= package.delivery_time:
+                status = f"Delivered at {package.delivery_time}"
+            elif queryTime >= timedelta(hours=8):
+                status = "En Route"
+            else:
+                status = "At Hub"
 
+            print(f"Package {package.id} | {packageTable.lookup(package.id)[0]} | {status}")
+
+# Program Flow:
+# 1. Load package and distance data from CSV files into memory
+# 2. Store package data in a hash table
+# 3. Convert raw data into Package objects for delivery simulation
+# 4. Assign packages to trucks with specific start times
+# 5. Run the delivery algorithm using nearest neighbor approach
+# 6. Track mileage, delivery times, and package statuses
+# 7. Allow user to query package status at any time
+# 8. Display results grouped by truck or individual package lookup
 # Program start
 packageTable = HashTable()
 
@@ -197,19 +244,19 @@ load_package_data("WGUPS Package File.csv", packageTable)
 load_distance_data("WGUPS Distance Table.csv")
 
 
-# Load trucks
+# Load trucks with Package class objects for use with algorithm logic
 truck1 = Truck(
-    [packageTable.lookup(i) for i in [1, 13, 14, 15, 16, 19, 20, 29, 30, 31, 34, 37, 40]],
+    [create_package(i) for i in [1, 13, 14, 15, 16, 19, 20, 29, 30, 31, 34, 37, 40]],
     timedelta(hours=8)
 )
 
 truck2 = Truck(
-    [packageTable.lookup(i) for i in [3, 6, 18, 25, 26, 27, 28, 32, 33, 35, 36, 38]],
+    [create_package(i) for i in [3, 6, 18, 25, 26, 27, 28, 32, 33, 35, 36, 38]],
     timedelta(hours=9, minutes=5)
 )
 
 truck3 = Truck(
-    [packageTable.lookup(i) for i in [2, 4, 5, 7, 8, 9, 10, 11, 12, 17, 21, 22, 23, 24, 39]],
+    [create_package(i) for i in [2, 4, 5, 7, 8, 9, 10, 11, 12, 17, 21, 22, 23, 24, 39]],
     timedelta(hours=10, minutes=20)
 )
 
@@ -217,6 +264,7 @@ truck3 = Truck(
 deliver_packages(truck1)
 deliver_packages(truck2)
 deliver_packages(truck3)
+trucks = [truck1, truck2, truck3]
 
 # Total mileage
 totalMiles = truck1.mileage + truck2.mileage + truck3.mileage
@@ -226,17 +274,37 @@ print("Total mileage:", round(totalMiles, 2))
 # Package look up
 while True:
 
-    inquiry = input("Enter package ID (or 'exit'): ")
+    inquiry = input("Enter package ID or All(or 'exit'): ")
+
+    # Print all packages at desired time
+    if inquiry.lower() == "all":
+        queryTime = input("Enter time: (HH:MM format)")
+        h, m = queryTime.split(":")
+        queryTime = timedelta(hours=int(h), minutes=int(m))
+        print_all_status(queryTime, trucks)
+        continue
 
     if inquiry.lower() == "exit":
         break
 
-    package = packageTable.lookup(int(inquiry))
+    # create package object from raw data for ease of use
+    package = create_package(int(inquiry))
 
     if package:
-        print(package)
+        queryTime = input("Enter package time: (HH:MM format)")
+        h, m = queryTime.split(":")
+        queryTime = timedelta(hours=int(h), minutes=int(m))
+        if package.delivery_time and queryTime >= package.delivery_time:
+            status = f"Delivered at {package.delivery_time}"
+        elif queryTime >= timedelta(hours=8):
+            status = "En Route"
+        else:
+            status = "At Hub"
+        print(f"Package {package.id} | {packageTable.lookup(package.id)[0]} | {status}")
+
+
 
 # Status prints for screenshot requirements
-print_all_status(timedelta(hours=9))
-print_all_status(timedelta(hours=10))
-print_all_status(timedelta(hours=12, minutes=30))
+print_all_status(timedelta(hours=9), trucks)
+print_all_status(timedelta(hours=10), trucks)
+print_all_status(timedelta(hours=12, minutes=30), trucks)
